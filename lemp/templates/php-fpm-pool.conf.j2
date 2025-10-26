@@ -1,0 +1,19 @@
+; This is an Ansible-managed template.
+; Pool configuration for: {{ item.user }}
+
+[{{ item.user }}]
+
+user = {{ item.user }}
+group = {{ item.user }}
+
+listen = /var/run/php-fpm{{ item.php_version }}-{{ item.user }}.sock
+listen.owner = {{ item.user }}
+listen.group = {{ item.user }}
+listen.mode = 0660
+
+pm = dynamic
+pm.max_children = 5
+pm.start_servers = 2
+pm.min_spare_servers = 1
+pm.max_spare_servers = 3
+request_terminate_timeout = 30

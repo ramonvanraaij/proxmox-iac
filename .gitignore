@@ -1,0 +1,19 @@
+# ===================================================================
+# Terraform State & Configuration
+# CRITICAL: These files contain sensitive information and state.
+# ===================================================================
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.tfvars
+.terraform/
+.terraform.lock.hcl
+crash.log
+*.tfplan
+
+# ===================================================================
+# Sensitive Files & Examples
+# Ignore any files containing secret keys or passwords.
+# ===================================================================
+*.env
+.proxmox_api_secrets

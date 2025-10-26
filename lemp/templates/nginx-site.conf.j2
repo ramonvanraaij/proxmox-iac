@@ -1,0 +1,61 @@
+# This server block is an Ansible-managed template for {{ item.domain }}
+server {
+    listen 80;
+    listen [::]:80;
+    
+    server_name {{ item.domain }} www.{{ item.domain }};
+    root /home/{{ item.user }}/{{ item.domain }}/html;
+    index index.php index.html;
+
+    access_log /var/log/nginx/{{ item.domain }}/access.log;
+    error_log /var/log/nginx/{{ item.domain }}/error.log;
+
+    # --- Caching Logic ---
+    set $do_not_cache $skip_cache_wp;
+    if ($query_string != "") {
+        set $do_not_cache 1;
+    }
+
+    # --- Security Headers ---
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer-when-downgrade" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    
+    # --- Deny access to sensitive files ---
+    location ~ /\. { deny all; }
+    location = /wp-config.php { deny all; }
+
+    # --- Browser Caching for Static Assets ---
+    location ~* \.(css|js|jpg|jpeg|gif|png|svg|webp|ico|woff|woff2|ttf|eot)$ {
+        expires 1M;
+        add_header Cache-Control "public, no-transform";
+        access_log off;
+    }
+
+    # --- Main WordPress Location Block ---
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    # --- PHP Processing & FastCGI Caching ---
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass unix:/var/run/php-fpm{{ item.php_version }}-{{ item.user }}.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+
+        # --- FastCGI Settings ---
+        fastcgi_connect_timeout 60s;
+        fastcgi_send_timeout 60s;
+        fastcgi_read_timeout 35s;
+        fastcgi_buffers 16 16k;
+        fastcgi_buffer_size 32k;
+
+        # --- Caching Directives ---
+        fastcgi_cache {{ item.cache_zone }};
+        fastcgi_cache_valid 200 60m;
+        fastcgi_cache_bypass $do_not_cache;
+        fastcgi_no_cache $do_not_cache;
+        add_header X-FastCGI-Cache $upstream_cache_status;
+    }
+}

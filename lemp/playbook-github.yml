@@ -1,0 +1,816 @@
+# playbook.yml - A comprehensive and idempotent Ansible playbook for a LEMP server on Alpine Linux
+- hosts: all
+  gather_facts: false
+  become: yes
+
+  vars:
+    # --- System and User Configuration ---
+    admin_user: "myuser"
+    admin_email: "youremail@example.com" # Required for Certbot & alert emails
+    admin_user_pub_key: "CHANGE_ME" # Public key for the admin user.
+
+    # --- MariaDB Root Password ---
+    mariadb_root_password: "CHANGE_ME_strong_root_password"
+
+    # --- Site & Database Configuration ---
+    sites:
+      - domain: "site1.com"
+        user: "site1"
+        db_name: "site1_db"
+        db_user: "site1_user"
+        db_password: "CHANGE_ME_strong_site1_password"
+        php_version: "83"
+        cache_zone: "site1_CACHE"
+      - domain: "site2.com"
+        user: "site2"
+        db_name: "site2_db"
+        db_user: "site2_user"
+        db_password: "CHANGE_ME_strong_site2_password"
+        php_version: "84"
+        cache_zone: "site2_CACHE"
+
+    # --- Optional Feature Flags ---
+    configure_cloudflare: false    # Set to 'true' if your server is behind Cloudflare.
+    nginx_proxy_manager_ip: ""     # Set to the IP of your local reverse proxy (e.g., Nginx Proxy Manager) if you have one.
+    obtain_ssl_certs: false        # Set to 'true' to automatically obtain Let's Encrypt SSL certificates for the configured sites.
+    crowdsec_enabled: true         # Set to 'false' to completely skip the installation and configuration of CrowdSec.
+    monit_enabled: false           # Set to 'true' to install and configure the Monit monitoring service.
+    monit_httpd_user: "admin"      # Defines the username for the Monit web interface.
+    monit_httpd_password: "CHANGE_ME_monit_password" # Sets the password for the Monit web interface.
+    monit_allowed_cidr: "{{ tf_monit_cidr | default('192.168.0.0/24') }}" # Passed from Terraform via --extra-vars
+
+    # --- System Email (SSMTP & Monit) Configuration ---
+    smtp_host: "smtp.gmail.com"            # SMTP server for sending all system emails.
+    smtp_port: 587                         # SMTP port (587 is standard for TLS).
+    smtp_user: "your-full-email@gmail.com"   # Full email address for SMTP authentication.
+    smtp_password: "CHANGE_ME_GMAIL_APP_PASSWORD" # App-specific password if using Gmail/2FA.
+    smtp_rewrite_domain: "gmail.com"         # The domain that emails will appear to come from for SSMTP.
+    monit_smtp_tls_version: "tlsv12"       # TLS version for Monit's mailer.
+    monit_alert_recipient: "{{ admin_email }}" # Recipient for Monit alerts.
+        
+  pre_tasks:
+    - name: Bootstrap | Ensure Python for Ansible is installed on the remote host
+      raw: apk add --no-cache python3
+      changed_when: false
+
+  tasks:
+    - name: Gather facts after python installation
+      ansible.builtin.setup:
+
+    - name: Ensure apk cache is updated
+      apk:
+        update_cache: yes
+
+    - name: Add Alpine Edge Testing Repository
+      lineinfile:
+        path: /etc/apk/repositories
+        line: '@testing https://dl-cdn.alpinelinux.org/alpine/edge/testing'
+        state: present
+
+    - name: Add Alpine Edge Community Repository
+      lineinfile:
+        path: /etc/apk/repositories
+        line: '@community https://dl-cdn.alpinelinux.org/alpine/edge/community'
+        state: present
+
+    - name: Add Alpine Edge Main Repository
+      lineinfile:
+        path: /etc/apk/repositories
+        line: 'https://dl-cdn.alpinelinux.org/alpine/edge/main'
+        state: present
+
+    - name: Upgrade all base packages to edge versions to prevent mismatches
+      ansible.builtin.command:
+        cmd: apk upgrade --available
+      register: apk_upgrade_result
+      changed_when: "'Upgrading' in apk_upgrade_result.stdout"
+
+    - name: Install all core packages
+      apk:
+        name:
+          - nano
+          - sudo
+          - shadow
+          - readline
+          - bash
+          - curl
+          - wget
+          - openssh
+          - logrotate
+          - ssmtp
+          - tar
+          - nftables
+          - nftables-openrc
+          - sshguard
+          - sshguard-openrc
+          - nginx
+          - mariadb
+          - mariadb-client
+          - py3-pymysql
+          - php83
+          - php83-fpm
+          - php83-mysqli
+          - php83-json
+          - php83-curl
+          - php83-dom
+          - php83-exif
+          - php83-fileinfo
+          - php83-mbstring
+          - php83-openssl
+          - php83-xml
+          - php83-zip
+          - php83-gd
+          - php83-pecl-apcu
+          - php83-pecl-imagick
+          - php83-iconv
+          - php83-intl
+          - php84
+          - php84-fpm
+          - php84-mysqli
+          - php84-json
+          - php84-curl
+          - php84-dom
+          - php84-exif
+          - php84-fileinfo
+          - php84-mbstring
+          - php84-openssl
+          - php84-xml
+          - php84-zip
+          - php84-gd
+          - php84-pecl-apcu
+          - php84-pecl-imagick
+          - php84-iconv
+          - php84-intl
+          - certbot
+          - certbot-nginx
+        state: latest
+
+    - name: Install CrowdSec and related packages
+      apk:
+        name:
+          - crowdsec@testing
+          - re2@community
+          - cs-firewall-bouncer@community
+          - git
+          - nginx-mod-http-lua
+          - lua5.1
+          - gettext
+          - lua5.1-resty-http
+          - lua5.1-cjson
+          - lua5.1-sql-mysql
+          - lua5.1-sql-sqlite3
+          - luarocks5.1
+          - lua5.1-dev
+          - lua5.1-filesystem
+          - build-base
+          - unzip
+          - lua-resty-string
+          - lua-resty-openssl
+        state: present
+      when: crowdsec_enabled | bool
+
+    - name: Install Monit package
+      apk:
+        name: monit
+        state: present
+      when: monit_enabled | bool
+
+    - name: Configure Automatic System Updates
+      block:
+        - name: Install apk-autoupdate package
+          apk:
+            name: apk-autoupdate@testing
+            state: present
+
+        - name: Download apk-autoupdate cron script
+          ansible.builtin.get_url:
+            url: https://raw.githubusercontent.com/ramonvanraaij/Scripts/refs/heads/main/linux/Alpine%20Linux/apk-autoupdate-cron
+            dest: /etc/periodic/daily/apk-autoupdate-cron
+            mode: '0700'
+
+        - name: Copy apk-autoupdate configuration file
+          ansible.builtin.copy:
+            src: ./files/etc/apk/autoupdate.conf
+            dest: /etc/apk/autoupdate.conf
+            owner: root
+            group: root
+            mode: '0640'
+
+    - name: Configure admin user
+      block:
+        - name: Create admin user '{{ admin_user }}'
+          ansible.builtin.user:
+            name: "{{ admin_user }}"
+            shell: /bin/bash
+            state: present
+            password: '*'
+        - name: Grant '{{ admin_user }}' sudo privileges
+          copy:
+            content: "{{ admin_user }} ALL=(ALL) ALL"
+            dest: "/etc/sudoers.d/{{ admin_user }}"
+            mode: '0440'
+            validate: 'visudo -cf %s'
+
+    - name: Secure SSH Access
+      block:
+        - name: Set up authorized key for the admin user
+          ansible.posix.authorized_key:
+            user: "{{ admin_user }}"
+            state: present
+            key: "{{ admin_user_pub_key }}"
+        - name: Disable root password login over SSH (allow key-based)
+          lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^#?PermitRootLogin'
+            line: 'PermitRootLogin prohibit-password'
+            validate: 'sshd -t -f %s'
+        - name: Disable all password authentication over SSH
+          ansible.builtin.lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^#?PasswordAuthentication'
+            line: 'PasswordAuthentication no'
+            validate: 'sshd -t -f %s'
+      notify: Restart sshd
+
+    - name: Ensure primary groups for site users exist
+      group:
+        name: "{{ item.user }}"
+        state: present
+        system: yes
+      loop: "{{ sites }}"
+
+    - name: Configure site users
+      user:
+        name: "{{ item.user }}"
+        group: "{{ item.user }}"
+        state: present
+        system: yes
+      loop: "{{ sites }}"
+
+    - name: Add nginx to site user groups for permissions
+      user:
+        name: "nginx"
+        groups: "{{ item.user }}"
+        append: yes
+      loop: "{{ sites }}"
+
+    - name: Copy static configuration files
+      copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        mode: "{{ item.mode | default('0644') }}"
+      loop:
+        - { src: './files/etc/sshguard.conf', dest: '/etc/sshguard.conf' }
+        - { src: './files/etc/motd', dest: '/etc/motd' }
+        - { src: './files/etc/init.d/nginx', dest: '/etc/init.d/nginx', mode: '0755' }
+        - { src: './files/etc/init.d/mariadb', dest: '/etc/init.d/mariadb', mode: '0755' }
+        - { src: './files/etc/init.d/php-fpm83', dest: '/etc/init.d/php-fpm83', mode: '0755' }
+        - { src: './files/etc/init.d/php-fpm84', dest: '/etc/init.d/php-fpm84', mode: '0755' }
+        - { src: './files/etc/logrotate.d/nginx', dest: '/etc/logrotate.d/nginx' }
+      notify:
+        - Restart sshguard
+        - Restart nginx
+        - Restart mariadb
+        - Restart php-fpm83
+        - Restart php-fpm84
+
+    - name: Configure Restic Backup Scripts
+      block:
+        - name: Download restic backup script
+          ansible.builtin.get_url:
+            url: https://raw.githubusercontent.com/ramonvanraaij/Scripts/refs/heads/main/linux/Alpine%20Linux/restic_backup.sh
+            dest: /usr/local/bin/restic_backup.sh
+            mode: '0700'
+
+        - name: Download Restic B2 environment file example
+          ansible.builtin.get_url:
+            url: https://raw.githubusercontent.com/ramonvanraaij/Scripts/refs/heads/main/linux/Alpine%20Linux/example_restic-b2.env
+            dest: /root/example_restic-b2.env
+            mode: '0600'
+
+        - name: Download Restic SFTP environment file example
+          ansible.builtin.get_url:
+            url: https://raw.githubusercontent.com/ramonvanraaij/Scripts/refs/heads/main/linux/Alpine%20Linux/example_restic-sftp.env
+            dest: /root/example_restic-sftp.env
+            mode: '0600'
+
+    - name: Configure nftables firewall rules from template
+      ansible.builtin.template:
+        src: templates/nftables.nft.j2
+        dest: /etc/nftables.nft
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reload nftables
+
+    - name: Configure PHP-FPM pools for each site
+      template:
+        src: ./templates/php-fpm-pool.conf.j2
+        dest: "/etc/php{{ item.php_version }}/php-fpm.d/{{ item.user }}.conf"
+        mode: '0644'
+      loop: "{{ sites }}"
+      notify:
+        - Restart php-fpm83
+        - Restart php-fpm84
+
+    - name: Remove default PHP-FPM www.conf pool files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/php83/php-fpm.d/www.conf
+        - /etc/php84/php-fpm.d/www.conf
+      notify:
+        - Restart php-fpm83
+        - Restart php-fpm84
+
+    - name: Update /etc/hosts with site domains
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} ANSIBLE MANAGED BLOCK: SITE DOMAINS"
+        block: |
+          {% for site in sites %}
+          {{ ansible_default_ipv4.address }} www.{{ site.domain }} {{ site.domain }}
+          {% endfor %}
+      when: ansible_default_ipv4.address is defined
+
+    - name: Configure SSMTP for system mail
+      ansible.builtin.template:
+        src: templates/ssmtp.conf.j2
+        dest: /etc/ssmtp/ssmtp.conf
+        owner: root
+        group: mail
+        mode: '0640'
+
+    - name: Configure Nginx
+      block:
+        - name: Configure Cloudflare IP Updater Script
+          block:
+            - name: Download the Cloudflare IP updater script
+              ansible.builtin.get_url:
+                url: https://gitea.vanraaij.eu//ramonvanraaij/Scripts/main/linux/nginx/update-cloudflare-ips.sh
+                dest: /usr/local/bin/update-cloudflare-ips.sh
+                mode: '0755'
+            - name: Run the Cloudflare IP updater for the first time
+              ansible.builtin.command:
+                cmd: /usr/local/bin/update-cloudflare-ips.sh
+                creates: /etc/nginx/http.d/cloudflare-ips.conf
+            - name: Schedule daily execution of the Cloudflare IP updater
+              ansible.builtin.file:
+                src: /usr/local/bin/update-cloudflare-ips.sh
+                dest: /etc/periodic/daily/update-cloudflare-ips
+                state: link
+          when: configure_cloudflare | bool
+
+        - name: Create Nginx config for trusted proxy
+          ansible.builtin.template:
+            src: ./templates/proxy-ips.conf.j2
+            dest: /etc/nginx/http.d/proxy-ips.conf
+            mode: '0644'
+          when: nginx_proxy_manager_ip or configure_cloudflare
+          notify: Restart nginx
+
+        - name: Insert Nginx cache configuration into http block
+          blockinfile:
+            path: /etc/nginx/nginx.conf
+            insertafter: '^[ \t]*http[ \t]*{'
+            marker: "# {mark} ANSIBLE MANAGED BLOCK: NGINX CACHE CONFIG"
+            block: |
+              {{ lookup('template', './templates/nginx_cache_config.j2') }}
+          notify: Restart nginx
+
+        - name: Configure Nginx Gzip settings idempotently
+          lineinfile:
+            path: /etc/nginx/nginx.conf
+            regexp: '^[ \t#]*{{ item.key }}\s+.*'
+            line: '    {{ item.key }} {{ item.value }};'
+            state: present
+            insertbefore: '^\s*# Includes virtual hosts configs.'
+          loop:
+            - { key: 'gzip', value: 'on' }
+            - { key: 'gzip_vary', value: 'on' }
+            - { key: 'gzip_disable', value: '"msie6"' }
+            - { key: 'gzip_proxied', value: 'any' }
+            - { key: 'gzip_comp_level', value: '6' }
+            - { key: 'gzip_buffers', value: '16 8k' }
+            - { key: 'gzip_http_version', value: '1.1' }
+            - { key: 'gzip_types', value: 'text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript' }
+          notify: Restart nginx
+
+        - name: Create Nginx server blocks for each site
+          template:
+            src: ./templates/nginx-site.conf.j2
+            dest: "/etc/nginx/http.d/{{ item.domain }}.conf"
+            mode: '0644'
+          loop: "{{ sites }}"
+          notify: Restart nginx
+
+        - name: Create directories for Nginx logs, cache, and web roots
+          file:
+            path: "{{ item }}"
+            state: directory
+            owner: nginx
+            group: nginx
+            mode: '0755'
+          loop:
+            - "/var/log/nginx/{{ sites[0].domain }}"
+            - "/var/log/nginx/{{ sites[1].domain }}"
+            - "/var/cache/nginx/{{ sites[0].user }}"
+            - "/var/cache/nginx/{{ sites[1].user }}"
+
+    - name: Configure MariaDB
+      block:
+        - name: Initialize MariaDB data directory (must run before starting service)
+          command: mariadb-install-db --user=mysql --datadir=/var/lib/mysql
+          args:
+            creates: /var/lib/mysql/mysql
+        - name: Ensure MariaDB service is started for setup tasks
+          service:
+            name: mariadb
+            state: started
+            enabled: yes
+        - name: Secure MariaDB installation (non-interactively)
+          block:
+            - name: Set the root password (connects with socket)
+              community.mysql.mysql_user:
+                name: root
+                host_all: yes
+                password: "{{ mariadb_root_password }}"
+                login_unix_socket: /run/mysqld/mysqld.sock
+            - name: Remove anonymous MySQL users (connects with socket AND password)
+              community.mysql.mysql_user:
+                name: ''
+                host_all: yes
+                state: absent
+                login_user: root
+                login_password: "{{ mariadb_root_password }}"
+                login_unix_socket: /run/mysqld/mysqld.sock
+            - name: Remove the test database (connects with socket AND password)
+              community.mysql.mysql_db:
+                name: test
+                state: absent
+                login_user: root
+                login_password: "{{ mariadb_root_password }}"
+                login_unix_socket: /run/mysqld/mysqld.sock
+        - name: Create databases and users for sites (connects with socket AND password)
+          block:
+            - name: Create databases
+              community.mysql.mysql_db:
+                name: "{{ item.db_name }}"
+                state: present
+                login_user: root
+                login_password: "{{ mariadb_root_password }}"
+                login_unix_socket: /run/mysqld/mysqld.sock
+              loop: "{{ sites }}"
+            - name: Create database users
+              community.mysql.mysql_user:
+                name: "{{ item.db_user }}"
+                password: "{{ item.db_password }}"
+                priv: "{{ item.db_name }}.*:ALL"
+                state: present
+                login_user: root
+                login_password: "{{ mariadb_root_password }}"
+                login_unix_socket: /run/mysqld/mysqld.sock
+              loop: "{{ sites }}"
+
+    - name: Deploy WordPress for each site
+      block:
+        - name: Create web root directory
+          file:
+            path: "/home/{{ item.user }}/{{ item.domain }}/html"
+            state: directory
+            owner: "{{ item.user }}"
+            group: "{{ item.user }}"
+            mode: '0755'
+          loop: "{{ sites }}"
+        - name: Download and unpack WordPress
+          unarchive:
+            src: https://wordpress.org/latest.tar.gz
+            dest: "/home/{{ item.user }}/{{ item.domain }}/html"
+            remote_src: yes
+            extra_opts: [--strip-components=1]
+            owner: "{{ item.user }}"
+            group: "{{ item.user }}"
+            creates: "/home/{{ item.user }}/{{ item.domain }}/html/wp-includes/version.php"
+          loop: "{{ sites }}"
+        - name: Set secure permissions for WordPress files
+          file:
+            path: "/home/{{ item.user }}/{{ item.domain }}"
+            owner: "{{ item.user }}"
+            group: "{{ item.user }}"
+            state: directory
+            recurse: yes
+          loop: "{{ sites }}"
+        - name: Set WordPress directory permissions to 750
+          command: "find /home/{{ item.user }}/{{ item.domain }} -type d -exec chmod 750 {} \\;"
+          changed_when: false
+          loop: "{{ sites }}"
+        - name: Set WordPress file permissions to 640
+          command: "find /home/{{ item.user }}/{{ item.domain }} -type f -exec chmod 640 {} \\;"
+          changed_when: false
+          loop: "{{ sites }}"
+
+    - name: CrowdSec Setup and Configuration
+      block:
+        # Part 1: File-based setup (before services start)
+        - name: Install lua-log via luarocks
+          ansible.builtin.command:
+            cmd: luarocks-5.1 install lua-log
+            creates: /usr/lib/luarocks/rocks-5.1/lua-log/
+        - name: Create temporary directory for CrowdSec setup
+          ansible.builtin.file:
+            path: /tmp/crowdsec-setup
+            state: directory
+            mode: '0755'
+        - name: Clone CrowdSec Nginx bouncer repository
+          ansible.builtin.git:
+            repo: https://github.com/crowdsecurity/cs-nginx-bouncer.git
+            dest: /tmp/crowdsec-setup/cs-nginx-bouncer
+            version: main
+        - name: Clone CrowdSec Lua bouncer repository
+          ansible.builtin.git:
+            repo: https://github.com/crowdsecurity/lua-cs-bouncer.git
+            dest: /tmp/crowdsec-setup/lua-cs-bouncer
+            version: main
+        - name: Create CrowdSec directories for bouncer
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+          loop:
+            - /usr/local/lua/crowdsec/
+            - /var/lib/crowdsec/lua/templates/
+            - /var/log/crowdsec/
+        - name: Copy Nginx configuration from cloned repo
+          ansible.builtin.copy:
+            src: /tmp/crowdsec-setup/cs-nginx-bouncer/nginx/crowdsec_nginx.conf
+            dest: /etc/nginx/http.d/crowdsec_nginx.conf
+            remote_src: yes
+        - name: Copy Lua library files from cloned repo
+          ansible.builtin.copy:
+            src: /tmp/crowdsec-setup/lua-cs-bouncer/lib/
+            dest: /usr/local/lua/crowdsec/
+            remote_src: yes
+        - name: Copy HTML templates from cloned repo
+          ansible.builtin.copy:
+            src: /tmp/crowdsec-setup/lua-cs-bouncer/templates/
+            dest: /var/lib/crowdsec/lua/templates/
+            remote_src: yes
+        - name: Clean up temporary CrowdSec setup directory
+          ansible.builtin.file:
+            path: /tmp/crowdsec-setup
+            state: absent
+        - name: Copy CrowdSec firewall bouncer config
+          ansible.builtin.copy:
+            src: ./files/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+            dest: /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+            owner: root
+            group: root
+            mode: '0600'
+        - name: Set firewall bouncer log directory
+          ansible.builtin.lineinfile:
+            path: /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+            regexp: '^log_dir:.*'
+            line: 'log_dir: /var/log/crowdsec/'
+        - name: Add retry_initial_connect to firewall bouncer config
+          ansible.builtin.blockinfile:
+            path: /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+            marker: "# {mark} ANSIBLE MANAGED BLOCK: RETRY CONNECT"
+            block: |
+              # instead of exiting with a fatal error on initial failure.
+              retry_initial_connect: true
+        - name: Create CrowdSec acquisition file
+          ansible.builtin.copy:
+            content: |
+              # This monitors all individual site logs
+              filenames:
+                - /var/log/nginx/*/access.log
+                - /var/log/nginx/access.log
+              labels:
+                type: nginx
+            dest: /etc/crowdsec/acquis.yaml
+        - name: Fix cs-firewall-bouncer service dependencies for OpenRC
+          ansible.builtin.blockinfile:
+            path: /etc/init.d/cs-firewall-bouncer
+            marker: "# {mark} ANSIBLE MANAGED DEPENDENCIES"
+            block: |
+              depend() {
+                  need net
+                  need crowdsec
+                  after firewall
+              }
+
+        # Part 2: Initial, offline configuration (DB init)
+        - name: Register agent with local API before starting service
+          ansible.builtin.command:
+            cmd: cscli machines add --auto --force
+          changed_when: false
+
+        # Part 3: Start CrowdSec service to enable its API
+        - name: Ensure CrowdSec service is started to enable API
+          ansible.builtin.service:
+            name: crowdsec
+            state: started
+            enabled: yes
+
+        # Part 4: Post-start configuration using cscli
+        - name: Update CrowdSec hub
+          ansible.builtin.command:
+            cmd: cscli hub update
+          changed_when: false
+        - name: Install CrowdSec collections
+          ansible.builtin.command:
+            cmd: cscli collections install crowdsecurity/linux crowdsecurity/nginx crowdsecurity/wordpress crowdsecurity/appsec-wordpress
+          changed_when: false
+        - name: Register agent with CrowdSec Central API
+          ansible.builtin.command:
+            cmd: cscli capi register
+          register: capi_register_result
+          changed_when: "'successfully registered' in capi_register_result.stdout"
+        - name: Check if Nginx bouncer already exists
+          ansible.builtin.shell: "cscli bouncers list -o raw | grep '^cs-nginx-bouncer,'"
+          register: nginx_bouncer_check
+          changed_when: false
+          failed_when: false
+          check_mode: no
+        - name: Create Nginx bouncer and get API key if it does not exist
+          ansible.builtin.command: "cscli bouncers add cs-nginx-bouncer -o raw"
+          when: nginx_bouncer_check.rc != 0
+          register: new_nginx_bouncer_key
+          changed_when: "'successfully added' in new_nginx_bouncer_key.stdout"
+        - name: Get existing Nginx bouncer API key if it exists
+          ansible.builtin.shell: "echo '{{ nginx_bouncer_check.stdout }}' | cut -d, -f2"
+          when: nginx_bouncer_check.rc == 0
+          register: existing_nginx_bouncer_key
+          changed_when: false
+          check_mode: no
+        - name: Set Nginx bouncer API key fact
+          ansible.builtin.set_fact:
+            nginx_bouncer_api_key: "{{ new_nginx_bouncer_key.stdout | default(existing_nginx_bouncer_key.stdout) }}"
+            crowdsec_lapi_url: "http://127.0.0.1:8080"
+        - name: Template the CrowdSec Nginx bouncer config with API key
+          ansible.builtin.template:
+            src: templates/crowdsec-nginx-bouncer.conf.j2
+            dest: /etc/crowdsec/bouncers/crowdsec-nginx-bouncer.conf
+            owner: root
+            group: root
+            mode: '0600'
+        - name: Register cs-firewall-bouncer if it does not exist
+          ansible.builtin.shell: "cscli bouncers list -o raw | grep -q cs-firewall-bouncer || cscli bouncers add cs-firewall-bouncer -o raw"
+          register: firewall_bouncer_api_key
+          changed_when: firewall_bouncer_api_key.stdout != ""
+        - name: Configure cs-firewall-bouncer API key
+          ansible.builtin.lineinfile:
+            path: /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+            regexp: '^api_key:'
+            line: 'api_key: {{ firewall_bouncer_api_key.stdout }}'
+          when: firewall_bouncer_api_key.changed
+        - name: Restart services to apply all CrowdSec changes
+          ansible.builtin.service:
+            name: "{{ item }}"
+            state: restarted
+          loop:
+            - crowdsec
+            - cs-firewall-bouncer
+            - nginx
+      when: crowdsec_enabled | bool
+
+    - name: Ensure all services are enabled and running
+      service:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - sshd
+        - nftables
+        - sshguard
+        - mariadb
+        - php-fpm83
+        - php-fpm84
+        - nginx
+
+    - name: Ensure CrowdSec services are enabled and running
+      service:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - crowdsec
+        - cs-firewall-bouncer
+      when: crowdsec_enabled | bool
+
+    - name: Configure and Start Monit
+      block:
+        - name: Configure Monit daemon settings and web interface
+          ansible.builtin.lineinfile:
+            path: /etc/monitrc
+            regexp: "{{ item.regexp }}"
+            line: "{{ item.line }}"
+            state: present
+          loop:
+            - { regexp: '^# *set daemon .*', line: 'set daemon 60' }
+            - { regexp: '^\s*use address localhost.*', line: '  # use address localhost  # allow only localhost to connect' }
+            - { regexp: '^\s*allow localhost.*', line: '  allow {{ monit_allowed_cidr }}   # allow anyone from my local network' }
+            - { regexp: '^\s*allow admin:monit.*', line: '  allow {{ monit_httpd_user }}:"{{ monit_httpd_password }}"' }
+            - { regexp: '^# *include /etc/monit.d/\*', line: 'include /etc/monit.d/*' }
+
+        - name: Configure Monit email alerting
+          ansible.builtin.blockinfile:
+            path: /etc/monitrc
+            marker: "# {mark} ANSIBLE MANAGED EMAIL CONFIG"
+            block: |
+              set mailserver {{ smtp_host }} port {{ smtp_port }}
+                  username "{{ smtp_user }}" password "{{ smtp_password }}"
+                  using {{ monit_smtp_tls_version }}
+              set mail-format {
+                from:    "LEMP Server <monit@{{ ansible_hostname }}>"
+                subject: Monit Alert -- $EVENT on $HOST
+                message: $EVENT Service $SERVICE
+                               Date:        $DATE
+                               Action:      $ACTION
+                               Host:        $HOST
+                               Description: $DESCRIPTION
+              }
+              set alert {{ monit_alert_recipient }}
+
+        - name: Create Monit configuration directory
+          ansible.builtin.file:
+            path: /etc/monit.d
+            state: directory
+            mode: '0700'
+
+        - name: Create Monit system monitoring config
+          ansible.builtin.copy:
+            dest: /etc/monit.d/system.conf
+            content: |
+              # Check general system resources
+              check system $HOST
+                  if loadavg (1min) > 4 then alert
+                  if loadavg (5min) > 2 then alert
+                  if memory usage > 85% then alert
+                  if cpu usage (user) > 80% for 3 cycles then alert
+                  if cpu usage (system) > 40% for 3 cycles then alert
+              # Check the root filesystem
+              check device rootfs with path /
+                  if space usage > 85% then alert
+
+        - name: Create Monit LEMP stack monitoring config
+          ansible.builtin.template:
+            src: templates/monit-lemp.conf.j2
+            dest: /etc/monit.d/lemp.conf
+
+        - name: Enable and start the Monit service
+          ansible.builtin.service:
+            name: monit
+            state: started
+            enabled: yes
+
+        - name: Reload Monit to apply new configuration
+          ansible.builtin.command:
+            cmd: monit reload
+          changed_when: false
+
+      when: monit_enabled | bool
+      
+    - name: Ensure Monit service is enabled and running
+      service:
+        name: monit
+        state: started
+        enabled: yes
+      when: monit_enabled | bool
+
+    - name: Obtain SSL certificates with Certbot
+      command: "certbot --nginx --non-interactive --agree-tos --email {{ admin_email }} -d {{ item.domain }} -d www.{{ item.domain }}"
+      args:
+        creates: "/etc/letsencrypt/live/{{ item.domain }}/fullchain.pem"
+      loop: "{{ sites }}"
+      notify: Reload nginx
+      when: obtain_ssl_certs | bool
+
+    - name: Flush all handlers to apply pending changes before reboot
+      ansible.builtin.meta: flush_handlers
+      
+    - name: Reboot the server to apply all changes cleanly
+      ansible.builtin.reboot:
+        msg: "Reboot initiated by Ansible"
+
+  handlers:
+    - name: Reload nftables
+      service: name=nftables state=reloaded
+    - name: Restart sshd
+      service: name=sshd state=restarted
+    - name: Restart sshguard
+      service: name=sshguard state=restarted
+    - name: Restart mariadb
+      service: name=mariadb state=restarted
+    - name: Restart nginx
+      service: name=nginx state=restarted
+    - name: Reload nginx
+      service: name=nginx state=reloaded
+    - name: Restart php-fpm83
+      service: name=php-fpm83 state=restarted
+    - name: Restart php-fpm84
+      service: name=php-fpm84 state=restarted
+    - name: Restart crowdsec
+      service: name=crowdsec state=restarted
+    - name: Restart cs-firewall-bouncer
+      service: name=cs-firewall-bouncer state=restarted

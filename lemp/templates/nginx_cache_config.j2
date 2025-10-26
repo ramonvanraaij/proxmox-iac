@@ -1,0 +1,23 @@
+# Define cache paths for each site.
+{% for site in sites %}
+fastcgi_cache_path /var/cache/nginx/{{ site.user }} levels=1:2 keys_zone={{ site.cache_zone }}:100m inactive=60m max_size=500m;
+{% endfor %}
+
+# Define the global cache key for creating unique cache entries.
+fastcgi_cache_key "$scheme$request_method$host$request_uri";
+
+# Map conditions for WordPress-specific caching.
+map $request_method$request_uri$http_cookie $skip_cache_wp {
+    default 0;
+    ~^(?!GET|HEAD) 1;
+    ~*/wp-admin/ 1;
+    ~*/xmlrpc.php 1;
+    ~*/wp-.*\.php 1;
+    ~*/feed/ 1;
+    ~*sitemap(_index)?\.xml 1;
+    ~comment_author 1;
+    ~wordpress_[a-f0-9]+ 1;
+    ~wp-postpass 1;
+    ~wordpress_no_cache 1;
+    ~wordpress_logged_in 1;
+}

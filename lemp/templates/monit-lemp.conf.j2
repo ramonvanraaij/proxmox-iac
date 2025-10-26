@@ -1,0 +1,62 @@
+# Ansible managed template: LEMP stack monitoring for Monit
+
+# Monitor the Nginx process
+check process nginx with pidfile /var/run/nginx/nginx.pid
+    start program = "/etc/init.d/nginx start"
+    stop program  = "/etc/init.d/nginx stop"
+{% if obtain_ssl_certs | bool %}
+    if failed host {{ sites[0].domain }} port 443 protocol https request "/"
+{% else %}
+    if failed host {{ sites[0].domain }} port 80 protocol http request "/"
+{% endif %}
+        for 2 cycles
+        then restart
+    if 5 restarts within 5 cycles then timeout
+
+# Monitor PHP-FPM processes for each site
+{% for site in sites %}
+check process php-fpm{{ site.php_version }}-{{ site.user }} with pidfile /var/run/php-fpm{{ site.php_version }}/php-fpm.pid
+    start program = "/etc/init.d/php-fpm{{ site.php_version }} start"
+    stop program  = "/etc/init.d/php-fpm{{ site.php_version }} stop"
+    if failed unixsocket /var/run/php-fpm{{ site.php_version }}-{{ site.user }}.sock then restart
+    if 5 restarts within 5 cycles then timeout
+{% endfor %}
+
+# Monitor the MariaDB process
+check process mariadb with pidfile /run/mysqld/mariadb.pid
+    start program = "/etc/init.d/mariadb start"
+    stop program  = "/etc/init.d/mariadb stop"
+    if failed unixsocket /run/mysqld/mysqld.sock then restart
+    if 5 restarts within 5 cycles then timeout
+
+# Monitor the SSH daemon
+check process sshd with pidfile /run/sshd.pid
+    start program = "/etc/init.d/sshd start"
+    stop program  = "/etc/init.d/sshd stop"
+    if failed port 22 protocol ssh then restart
+    if 5 restarts within 5 cycles then timeout
+
+# Monitor sshguard
+check process sshguard with pidfile /var/run/sshguard.pid
+    start program = "/etc/init.d/sshguard start"
+    stop program  = "/etc/init.d/sshguard stop"
+    if 5 restarts within 5 cycles then timeout
+
+# Monitor nftables by executing the check within a shell
+check program nftables-status with path "/bin/sh -c '/usr/sbin/nft list ruleset'"
+    if status != 0 for 2 cycles then exec "/bin/sh -c '/etc/init.d/nftables start'"
+
+{% if crowdsec_enabled | bool %}
+# Monitor the CrowdSec agent
+check process crowdsec with pidfile /var/run/crowdsec.pid
+    start program = "/etc/init.d/crowdsec start"
+    stop program  = "/etc/init.d/crowdsec stop"
+    if 5 restarts within 5 cycles then timeout
+
+# Monitor the CrowdSec Firewall Bouncer
+check process cs-firewall-bouncer with pidfile /var/run/cs-firewall-bouncer.pid
+    start program = "/etc/init.d/cs-firewall-bouncer start"
+    stop program  = "/etc/init.d/cs-firewall-bouncer stop"
+    if 5 restarts within 5 cycles then timeout
+{% endif %}
+

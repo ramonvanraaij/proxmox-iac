@@ -1,0 +1,24 @@
+# This file is managed by Ansible. Do not edit manually.
+#
+# The user that gets all the mails for userids < 1000
+root={{ admin_email }}
+
+# The mail server
+mailhub={{ smtp_host }}:{{ smtp_port }}
+
+# Where will the mail seem to come from?
+rewriteDomain={{ smtp_rewrite_domain }}
+
+# The full hostname of your server
+hostname={{ ansible_hostname }}
+
+# Use STARTTLS
+UseTLS=YES
+UseSTARTTLS=YES
+
+# Username and password for your mail account
+AuthUser={{ smtp_user }}
+AuthPass={{ smtp_password }}
+
+# Allow the script to set the From: address
+FromLineOverride=YES

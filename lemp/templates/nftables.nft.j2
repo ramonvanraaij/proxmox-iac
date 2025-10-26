@@ -1,0 +1,79 @@
+# This file is managed by Ansible. Do not edit manually.
+
+#
+# nftables configuration for a LEMP server on Alpine Linux
+#
+
+# Flush the existing ruleset to start clean.
+flush ruleset
+
+#
+# Table: 'inet filter' for both IPv4 and IPv6 traffic
+#
+table inet filter {
+    #
+    # Sets for organizing IP addresses
+    #
+    set crowdsec-blacklist-ipv4 {
+        type ipv4_addr
+        flags timeout
+    }
+    set crowdsec-blacklist-ipv6 {
+        type ipv6_addr
+        flags timeout
+    }
+
+    #
+    # Chain: 'input' for incoming traffic to the server itself
+    #
+    chain input {
+        type filter hook input priority 0;
+        policy drop; # Default policy: drop everything unless explicitly allowed.
+
+        # Allow loopback traffic (essential for local services)
+        iifname "lo" accept
+
+        # Drop invalid packets early
+        ct state invalid drop
+
+        # Allow established and related connections
+        ct state { established, related } accept
+
+        # Rate-limiting for new connections to prevent basic floods
+        # Allow up to 15 new connections per second, with a burst of 25.
+        limit rate 15/second burst 25 packets accept
+
+        # CrowdSec Integration: Check against blacklists
+        ip saddr @crowdsec-blacklist-ipv4 drop
+        ip6 saddr @crowdsec-blacklist-ipv6 drop
+
+        # Allow ICMP (Ping)
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+
+        # Allow essential web and SSH traffic
+        # This rule dynamically includes the Monit port if Monit is enabled.
+        tcp dport { 22, 80, 443{% if monit_enabled %}, 2812{% endif %} } accept
+
+        # Log and drop anything else that reaches this point.
+        # Logging is rate-limited to prevent filling up logs.
+        # limit rate 5/minute log prefix "iptables-dropped: "
+        # The 'drop' is implicit due to the chain's default policy.
+    }
+
+    #
+    # Chain: 'forward' for traffic passing through the server
+    #
+    chain forward {
+        type filter hook forward priority 0;
+        policy drop; # By default, do not forward any traffic.
+    }
+
+    #
+    # Chain: 'output' for traffic originating from the server
+    #
+    chain output {
+        type filter hook output priority 0;
+        policy accept; # By default, allow all outgoing traffic.
+    }
+}

@@ -1,0 +1,34 @@
++-----------------------------------------------------------------------------+
+|                                                                             |
+|                    Welcome to the Reproducible Fortress                     |
+|                                                                             |
++-----------------------------------------------------------------------------+
+
+This server was provisioned with Terraform and Ansible.
+Full documentation for this setup is available at:
+https://ramon.vanraaij.eu/the-reproducible-fortress-proxmox-as-code-with-terraform-ansible/
+
+                      *** Restic Backup Setup ***
+
+To configure off-site backups, follow these steps:
+
+1. Copy the desired example credential file(s):
+
+   cp /root/example_restic-b2.env /root/.restic-b2.env
+   cp /root/example_restic-sftp.env /root/.restic-sftp.env
+
+2. Edit the new credential file(s) and fill in your repository details
+   and secrets.
+
+3. Secure the credential file(s) by setting restrictive permissions:
+
+   chmod 600 /root/.restic-b2.env
+   chmod 600 /root/.restic-sftp.env
+
+4. Edit the main backup script and set your preferences (e.g., backup
+   method, email address, retention policy):
+
+   nano /usr/local/bin/restic_backup.sh
+
+For a detailed guide on the backup strategy, see this blog post:
+https://ramon.vanraaij.eu/automated-secure-off-site-backups/
