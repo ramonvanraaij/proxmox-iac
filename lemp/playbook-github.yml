@@ -7,7 +7,7 @@
     # --- System and User Configuration ---
     admin_user: "myuser"
     admin_email: "youremail@example.com" # Required for Certbot & alert emails
-    admin_user_pub_key: "CHANGE_ME" # Public key for the admin user.
+    admin_user_pub_key_file: "~/.ssh/id_ed25519.pub" # Path to the public key for the admin user.
 
     # --- MariaDB Root Password ---
     mariadb_root_password: "CHANGE_ME_strong_root_password"
@@ -217,7 +217,7 @@
           ansible.posix.authorized_key:
             user: "{{ admin_user }}"
             state: present
-            key: "{{ admin_user_pub_key }}"
+            key: "{{ lookup('file', admin_user_pub_key_file) }}"
         - name: Disable root password login over SSH (allow key-based)
           lineinfile:
             path: /etc/ssh/sshd_config
