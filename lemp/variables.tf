@@ -60,8 +60,8 @@ variable "target_node" {
 
 variable "ostemplate" {
   type        = string
-  description = "The name of the LXC template to use (e.g., 'local:vztmpl/alpine-3.22-default_20250617_amd64.tar.xz')."
-  default     = "local:vztmpl/alpine-3.22-default_20250617_amd64.tar.xz"
+  description = "The name of the LXC template to use (e.g., 'local:vztmpl/alpine-3.23-default_20260116_amd64.tar.xz')."
+  default     = "local:alpine-3.23-default_20260116_amd64.tar.xz"
 }
 
 variable "ssh_public_key_path" {

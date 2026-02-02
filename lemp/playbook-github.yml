@@ -70,7 +70,7 @@
     - name: Add Alpine Edge Community Repository
       lineinfile:
         path: /etc/apk/repositories
-        line: '@community https://dl-cdn.alpinelinux.org/alpine/edge/community'
+        line: 'https://dl-cdn.alpinelinux.org/alpine/edge/community'
         state: present
 
     - name: Add Alpine Edge Main Repository
@@ -149,8 +149,8 @@
       apk:
         name:
           - crowdsec@testing
-          - re2@community
-          - cs-firewall-bouncer@community
+          - re2
+          - cs-firewall-bouncer
           - git
           - nginx-mod-http-lua
           - lua5.1
@@ -175,6 +175,16 @@
         state: present
       when: monit_enabled | bool
 
+    - name: Clone Scripts repository via SSH on localhost
+      ansible.builtin.git:
+        repo: git@github.com:ramonvanraaij/Scripts.git
+        dest: /tmp/ramon-scripts
+        version: main
+        accept_hostkey: yes
+      delegate_to: localhost
+      run_once: true
+      become: no
+
     - name: Configure Automatic System Updates
       block:
         - name: Install apk-autoupdate package
@@ -182,9 +192,9 @@
             name: apk-autoupdate@testing
             state: present
 
-        - name: Download apk-autoupdate cron script
-          ansible.builtin.get_url:
-            url: https://raw.githubusercontent.com/ramonvanraaij/Scripts/refs/heads/main/linux/Alpine%20Linux/apk-autoupdate-cron
+        - name: Copy apk-autoupdate cron script
+          ansible.builtin.copy:
+            src: /tmp/ramon-scripts/linux/Alpine Linux/apk-autoupdate-cron
             dest: /etc/periodic/daily/apk-autoupdate-cron
             mode: '0700'
 
@@ -276,21 +286,21 @@
 
     - name: Configure Restic Backup Scripts
       block:
-        - name: Download restic backup script
-          ansible.builtin.get_url:
-            url: https://raw.githubusercontent.com/ramonvanraaij/Scripts/refs/heads/main/linux/Alpine%20Linux/restic_backup.sh
+        - name: Copy restic backup script
+          ansible.builtin.copy:
+            src: /tmp/ramon-scripts/linux/Alpine Linux/restic_backup.sh
             dest: /usr/local/bin/restic_backup.sh
             mode: '0700'
 
-        - name: Download Restic B2 environment file example
-          ansible.builtin.get_url:
-            url: https://raw.githubusercontent.com/ramonvanraaij/Scripts/refs/heads/main/linux/Alpine%20Linux/example_restic-b2.env
+        - name: Copy Restic B2 environment file example
+          ansible.builtin.copy:
+            src: /tmp/ramon-scripts/linux/Alpine Linux/example_restic-b2.env
             dest: /root/example_restic-b2.env
             mode: '0600'
 
-        - name: Download Restic SFTP environment file example
-          ansible.builtin.get_url:
-            url: https://raw.githubusercontent.com/ramonvanraaij/Scripts/refs/heads/main/linux/Alpine%20Linux/example_restic-sftp.env
+        - name: Copy Restic SFTP environment file example
+          ansible.builtin.copy:
+            src: /tmp/ramon-scripts/linux/Alpine Linux/example_restic-sftp.env
             dest: /root/example_restic-sftp.env
             mode: '0600'
 
@@ -346,9 +356,9 @@
       block:
         - name: Configure Cloudflare IP Updater Script
           block:
-            - name: Download the Cloudflare IP updater script
-              ansible.builtin.get_url:
-                url: https://gitea.vanraaij.eu//ramonvanraaij/Scripts/main/linux/nginx/update-cloudflare-ips.sh
+            - name: Copy the Cloudflare IP updater script
+              ansible.builtin.copy:
+                src: /tmp/ramon-scripts/linux/cloudflare/cloudflare-cache-purge.sh
                 dest: /usr/local/bin/update-cloudflare-ips.sh
                 mode: '0755'
             - name: Run the Cloudflare IP updater for the first time
@@ -617,10 +627,20 @@
           ansible.builtin.command:
             cmd: cscli hub update
           changed_when: false
+
         - name: Install CrowdSec collections
           ansible.builtin.command:
             cmd: cscli collections install crowdsecurity/linux crowdsecurity/nginx crowdsecurity/wordpress crowdsecurity/appsec-wordpress
           changed_when: false
+
+        - name: Restart CrowdSec and Bouncer to ensure collections are loaded
+          ansible.builtin.service:
+            name: "{{ item }}"
+            state: restarted
+          loop:
+            - crowdsec
+            - cs-firewall-bouncer
+
         - name: Register agent with CrowdSec Central API
           ansible.builtin.command:
             cmd: cscli capi register

@@ -4,7 +4,7 @@ terraform {
   required_providers {
     proxmox = {
       source  = "telmate/proxmox"
-      version = "3.0.2-rc05" # Using the required version
+      version = "3.0.2-rc07" # Using the required version
     }
   }
 }

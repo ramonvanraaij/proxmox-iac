@@ -70,7 +70,7 @@
     - name: Add Alpine Edge Community Repository
       lineinfile:
         path: /etc/apk/repositories
-        line: '@community https://dl-cdn.alpinelinux.org/alpine/edge/community'
+        line: 'https://dl-cdn.alpinelinux.org/alpine/edge/community'
         state: present
 
     - name: Add Alpine Edge Main Repository
@@ -149,8 +149,8 @@
       apk:
         name:
           - crowdsec@testing
-          - re2@community
-          - cs-firewall-bouncer@community
+          - re2
+          - cs-firewall-bouncer
           - git
           - nginx-mod-http-lua
           - lua5.1
@@ -617,10 +617,20 @@
           ansible.builtin.command:
             cmd: cscli hub update
           changed_when: false
+
         - name: Install CrowdSec collections
           ansible.builtin.command:
             cmd: cscli collections install crowdsecurity/linux crowdsecurity/nginx crowdsecurity/wordpress crowdsecurity/appsec-wordpress
           changed_when: false
+
+        - name: Restart CrowdSec and Bouncer to ensure collections are loaded
+          ansible.builtin.service:
+            name: "{{ item }}"
+            state: restarted
+          loop:
+            - crowdsec
+            - cs-firewall-bouncer
+
         - name: Register agent with CrowdSec Central API
           ansible.builtin.command:
             cmd: cscli capi register
