@@ -16,7 +16,7 @@ The goal of this project is to define an entire LEMP server environment as code.
 * **Virtualization:** Proxmox VE
 * **Infrastructure as Code:** Terraform
 * **Configuration Management:** Ansible
-* **Operating System:** Alpine Linux
+* **Operating System:** Alpine Linux 3.24 (stable)
 * **Core Stack:** Nginx, MariaDB, PHP (8.3 & 8.4)
 * **Security:** CrowdSec (Intrusion Prevention), `nftables` Firewall, Hardened SSH
 * **Monitoring:** Monit
@@ -80,6 +80,8 @@ To enable secure automation, you must configure a dedicated Terraform user and a
     sudo pveam download local alpine-3.23-default_20260116_amd64.tar.xz
     ```
 
+    *The deployment kickstarts from the Alpine 3.23 template (the newest LXC image currently published) and upgrades the base to the **Alpine 3.24 stable** repositories during provisioning. Switch the template, and the `alpine_branch` variable at the top of the playbook, to a newer release once its LXC image becomes available. Only `crowdsec` and `apk-autoupdate`, which are not carried in any stable Alpine release, are pinned from the `edge/testing` repository.*
+
 ## ⚙ Configuration
 
 1.  **Clone the Repository:**
@@ -127,6 +129,26 @@ After the deployment is finished, you must connect using the user in `admin_user
 ```bash
 ssh myuser@<container_ip>
 ```
+
+## ✅ Validating the Deployment
+
+Two helper scripts in `lemp/` confirm that a deployment installed and is running correctly.
+
+**`verify.sh`** runs *inside* the container (as root) and validates every component: the Alpine release and repositories, Nginx (`nginx -t` plus a live request), both PHP-FPM pools (8.3 and 8.4), MariaDB, CrowdSec (agent, LAPI/CAPI, the Nginx and `nftables` bouncers, collections and the firewall blocklist sets) and WordPress for each site. It prints a `PASS`/`FAIL` summary and exits non-zero on any failure.
+
+```bash
+# run inside the container
+./verify.sh                      # auto-discovers sites from the Nginx config
+./verify.sh site1.com site2.com  # or pass the site domains explicitly
+```
+
+**`test_deployment.sh`** runs *from the control host* and drives the whole test without any DNS or `/etc/hosts` changes. It reads the container IP, Proxmox host and container ID from `terraform.tfvars` (which is gitignored, so nothing host-specific is hardcoded), reaches each placeholder site with `curl --resolve <site>:80:<container_ip>` so the fake domains (`site1.com`, `site2.com`) resolve straight to the container, and then runs `verify.sh` inside the container through the Proxmox `pct exec` wrapper.
+
+```bash
+cd lemp
+./test_deployment.sh             # all values are taken from terraform.tfvars
+```
+
 ## 🤝 Credits & Maintenance
 
 Developed and maintained by **[Rámon van Raaij](https://ramon.vanraaij.eu)** (2025-2026).
@@ -156,4 +178,4 @@ These scripts are provided "as is" without warranty of any kind, express or impl
 
 Copyright (c) 2025-2026 Rámon van Raaij
 
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
+This project is licensed under the BSD 3-Clause License - see the [LICENSE.md](LICENSE.md) file for details.

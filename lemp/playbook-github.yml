@@ -4,6 +4,18 @@
   become: yes
 
   vars:
+    # Alpine stable branch the stack runs on. We kickstart from the 3.23 LXC
+    # template (no 3.24 template exists yet) and upgrade the base onto these
+    # repos. Bump this when a newer stable Alpine release is available.
+    alpine_branch: "v3.24"
+
+    # Pin the interpreter to the stable /usr/bin/python3 symlink. The raw
+    # bootstrap installs python3 (3.12 on the 3.23 template base), but the
+    # cross-release upgrade to {{ alpine_branch }} bumps Python to a newer minor
+    # (e.g. 3.14), which removes the version-specific path Ansible would
+    # otherwise auto-discover and cache, breaking every later module-based task.
+    ansible_python_interpreter: /usr/bin/python3
+
     # --- System and User Configuration ---
     admin_user: "myuser"
     admin_email: "youremail@example.com" # Required for Certbot & alert emails
@@ -57,29 +69,21 @@
     - name: Gather facts after python installation
       ansible.builtin.setup:
 
-    - name: Ensure apk cache is updated
+    - name: Configure apk repositories for Alpine {{ alpine_branch }} stable
+      ansible.builtin.copy:
+        dest: /etc/apk/repositories
+        content: |
+          https://dl-cdn.alpinelinux.org/alpine/{{ alpine_branch }}/main
+          https://dl-cdn.alpinelinux.org/alpine/{{ alpine_branch }}/community
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Update apk cache for the new repositories
       apk:
         update_cache: yes
 
-    - name: Add Alpine Edge Testing Repository
-      lineinfile:
-        path: /etc/apk/repositories
-        line: '@testing https://dl-cdn.alpinelinux.org/alpine/edge/testing'
-        state: present
-
-    - name: Add Alpine Edge Community Repository
-      lineinfile:
-        path: /etc/apk/repositories
-        line: 'https://dl-cdn.alpinelinux.org/alpine/edge/community'
-        state: present
-
-    - name: Add Alpine Edge Main Repository
-      lineinfile:
-        path: /etc/apk/repositories
-        line: 'https://dl-cdn.alpinelinux.org/alpine/edge/main'
-        state: present
-
-    - name: Upgrade all base packages to edge versions to prevent mismatches
+    - name: Upgrade the template base onto Alpine {{ alpine_branch }} (cross-release upgrade)
       ansible.builtin.command:
         cmd: apk upgrade --available
       register: apk_upgrade_result
@@ -108,9 +112,10 @@
           - mariadb-client
           - py3-pymysql
           - php83
+          - php83-common
           - php83-fpm
           - php83-mysqli
-          - php83-json
+          - php83-mysqlnd
           - php83-curl
           - php83-dom
           - php83-exif
@@ -120,14 +125,19 @@
           - php83-xml
           - php83-zip
           - php83-gd
+          - php83-ctype
+          - php83-phar
+          - php83-sqlite3
           - php83-pecl-apcu
+          - php83-pecl-igbinary
           - php83-pecl-imagick
           - php83-iconv
           - php83-intl
           - php84
+          - php84-common
           - php84-fpm
           - php84-mysqli
-          - php84-json
+          - php84-mysqlnd
           - php84-curl
           - php84-dom
           - php84-exif
@@ -137,13 +147,32 @@
           - php84-xml
           - php84-zip
           - php84-gd
+          - php84-ctype
+          - php84-phar
+          - php84-sqlite3
           - php84-pecl-apcu
+          - php84-pecl-igbinary
           - php84-pecl-imagick
           - php84-iconv
           - php84-intl
           - certbot
           - certbot-nginx
         state: latest
+
+    - name: Add Alpine edge/testing as a tagged apk repo
+      # A few packages (crowdsec, apk-autoupdate) are published only in
+      # edge/testing - no stable Alpine release carries them. The @testing tag
+      # means apk pulls a package from here ONLY when it is explicitly requested
+      # as <pkg>@testing; everything else keeps coming from the stable repos.
+      # Added after the base upgrade so that "apk upgrade" never sees edge.
+      ansible.builtin.lineinfile:
+        path: /etc/apk/repositories
+        line: '@testing https://dl-cdn.alpinelinux.org/alpine/edge/testing'
+        state: present
+
+    - name: Update apk cache after adding the testing tag
+      apk:
+        update_cache: yes
 
     - name: Install CrowdSec and related packages
       apk:
@@ -155,7 +184,7 @@
           - nginx-mod-http-lua
           - lua5.1
           - gettext
-          - lua5.1-resty-http
+          - lua-resty-http
           - lua5.1-cjson
           - lua5.1-sql-mysql
           - lua5.1-sql-sqlite3
@@ -164,9 +193,22 @@
           - lua5.1-filesystem
           - build-base
           - unzip
-          - lua-resty-string
           - lua-resty-openssl
         state: present
+      when: crowdsec_enabled | bool
+
+    - name: Provide resty.string for the CrowdSec Nginx Lua bouncer
+      # lua-resty-string is no longer installable on Alpine 3.24 without pulling
+      # in openresty (its 0.15-r1 apk package depends on openresty-mod-http-lua,
+      # which conflicts with stock nginx + nginx-mod-http-lua). resty.http's
+      # to_hex needs resty.string, so we drop the vendored module next to the
+      # other resty libraries where nginx-mod-http-lua's lua_package_path finds it.
+      ansible.builtin.copy:
+        src: ./files/usr/share/lua/common/resty/string.lua
+        dest: /usr/share/lua/common/resty/string.lua
+        owner: root
+        group: root
+        mode: '0644'
       when: crowdsec_enabled | bool
 
     - name: Install Monit package
